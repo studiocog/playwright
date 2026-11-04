@@ -49,38 +49,42 @@ export type LocatorOptions = {
 
 export class Locator implements api.Locator {
   _frame: Frame;
-  _selector: string;
+  _rawSelector: string;
   _apiName = 'Locator';
 
   constructor(frame: Frame, selector: string, options?: LocatorOptions) {
     this._frame = frame;
-    this._selector = selector;
+    this._rawSelector = selector;
 
     if (options?.hasText)
-      this._selector += ` >> internal:has-text=${escapeForTextSelector(options.hasText, false)}`;
+      this._rawSelector += ` >> internal:has-text=${escapeForTextSelector(options.hasText, false)}`;
 
     if (options?.hasNotText)
-      this._selector += ` >> internal:has-not-text=${escapeForTextSelector(options.hasNotText, false)}`;
+      this._rawSelector += ` >> internal:has-not-text=${escapeForTextSelector(options.hasNotText, false)}`;
 
     if (options?.has) {
       const locator = options.has;
       if (locator._frame !== frame)
         throw new Error(`Inner "has" locator must belong to the same frame.`);
-      this._selector += ` >> internal:has=` + JSON.stringify(locator._selector);
+      this._rawSelector += ` >> internal:has=` + JSON.stringify(locator._rawSelector);
     }
 
     if (options?.hasNot) {
       const locator = options.hasNot;
       if (locator._frame !== frame)
         throw new Error(`Inner "hasNot" locator must belong to the same frame.`);
-      this._selector += ` >> internal:has-not=` + JSON.stringify(locator._selector);
+      this._rawSelector += ` >> internal:has-not=` + JSON.stringify(locator._rawSelector);
     }
 
     if (options?.visible !== undefined)
-      this._selector += ` >> visible=${options.visible ? 'true' : 'false'}`;
+      this._rawSelector += ` >> visible=${options.visible ? 'true' : 'false'}`;
 
     if (inspect.custom)
       (this as any)[inspect.custom] = () => this._inspect();
+  }
+
+  get _selector(): string {
+    return this._frame.page().context()._options.locateOnlyVisible ? this._rawSelector + ' >> visible=true' : this._rawSelector;
   }
 
   async _wrapApiCall<R>(func: () => Promise<R>, options?: ApiCallOptions): Promise<R> {
@@ -182,10 +186,10 @@ export class Locator implements api.Locator {
 
   locator(selectorOrLocator: string | Locator, options?: Omit<LocatorOptions, 'visible'>): Locator {
     if (isString(selectorOrLocator))
-      return new Locator(this._frame, this._selector + ' >> ' + selectorOrLocator, options);
+      return new Locator(this._frame, this._rawSelector + ' >> ' + selectorOrLocator, options);
     if (selectorOrLocator._frame !== this._frame)
       throw new Error(`Locators must belong to the same frame.`);
-    return new Locator(this._frame, this._selector + ' >> internal:chain=' + JSON.stringify(selectorOrLocator._selector), options);
+    return new Locator(this._frame, this._rawSelector + ' >> internal:chain=' + JSON.stringify(selectorOrLocator._rawSelector), options);
   }
 
   within(locator: Locator): Locator {
@@ -221,15 +225,15 @@ export class Locator implements api.Locator {
   }
 
   frameLocator(selector: string): FrameLocator {
-    return new FrameLocator(this._frame, this._selector + ' >> ' + selector);
+    return new FrameLocator(this._frame, this._rawSelector + ' >> ' + selector);
   }
 
   filter(options?: LocatorOptions): Locator {
-    return new Locator(this._frame, this._selector, options);
+    return new Locator(this._frame, this._rawSelector, options);
   }
 
   visible(): Locator {
-    return new Locator(this._frame, this._selector, { visible: true });
+    return new Locator(this._frame, this._rawSelector, { visible: true });
   }
 
   async elementHandle(options?: TimeoutOptions): Promise<ElementHandle<SVGElement | HTMLElement>> {
@@ -241,11 +245,11 @@ export class Locator implements api.Locator {
   }
 
   contentFrame() {
-    return new FrameLocator(this._frame, this._selector);
+    return new FrameLocator(this._frame, this._rawSelector);
   }
 
   describe(description: string) {
-    return new Locator(this._frame, this._selector + ' >> internal:describe=' + JSON.stringify(description));
+    return new Locator(this._frame, this._rawSelector + ' >> internal:describe=' + JSON.stringify(description));
   }
 
   description(): string | null {
@@ -253,27 +257,27 @@ export class Locator implements api.Locator {
   }
 
   first(): Locator {
-    return new Locator(this._frame, this._selector + ' >> nth=0');
+    return new Locator(this._frame, this._rawSelector + ' >> nth=0');
   }
 
   last(): Locator {
-    return new Locator(this._frame, this._selector + ` >> nth=-1`);
+    return new Locator(this._frame, this._rawSelector + ` >> nth=-1`);
   }
 
   nth(index: number): Locator {
-    return new Locator(this._frame, this._selector + ` >> nth=${index}`);
+    return new Locator(this._frame, this._rawSelector + ` >> nth=${index}`);
   }
 
   and(locator: Locator): Locator {
     if (locator._frame !== this._frame)
       throw new Error(`Locators must belong to the same frame.`);
-    return new Locator(this._frame, this._selector + ` >> internal:and=` + JSON.stringify(locator._selector));
+    return new Locator(this._frame, this._rawSelector + ` >> internal:and=` + JSON.stringify(locator._rawSelector));
   }
 
   or(locator: Locator): Locator {
     if (locator._frame !== this._frame)
       throw new Error(`Locators must belong to the same frame.`);
-    return new Locator(this._frame, this._selector + ` >> internal:or=` + JSON.stringify(locator._selector));
+    return new Locator(this._frame, this._rawSelector + ` >> internal:or=` + JSON.stringify(locator._rawSelector));
   }
 
   async focus(options?: TimeoutOptions): Promise<void> {
@@ -403,7 +407,8 @@ export class Locator implements api.Locator {
   }
 
   async all(): Promise<Locator[]> {
-    return new Array(await this.count()).fill(0).map((e, i) => this.nth(i));
+    const locator = new Locator(this._frame, this._selector);
+    return new Array(await locator.count()).fill(0).map((e, i) => locator.nth(i));
   }
 
   async allInnerTexts(): Promise<string[]> {
@@ -467,7 +472,7 @@ export class FrameLocator implements api.FrameLocator {
       return new Locator(this._frame, this._childSelector(selectorOrLocator), options);
     if (selectorOrLocator._frame !== this._frame)
       throw new Error(`Locators must belong to the same frame.`);
-    return new Locator(this._frame, this._childSelector(selectorOrLocator._selector), options);
+    return new Locator(this._frame, this._childSelector(selectorOrLocator._rawSelector), options);
   }
 
   getByTestId(testId: string | RegExp): Locator {
