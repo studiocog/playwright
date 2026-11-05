@@ -20,6 +20,8 @@ test('test snapshot tool list', async ({ client }) => {
   const { tools } = await client.listTools();
   expect(new Set(tools.map(t => t.name))).toEqual(new Set([
     'browser_batch',
+    'browser_list_browsers',
+    'browser_switch_browser',
     'browser_get_text',
     'browser_paste_image',
     'browser_start_gif',

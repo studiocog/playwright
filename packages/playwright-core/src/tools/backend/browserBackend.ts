@@ -19,10 +19,12 @@ import { EventEmitter } from 'events';
 import * as z from 'zod';
 import debug from 'debug';
 import { batchToolName, readShortcuts, shortcutRunToolName } from './batch';
+import { describeBrowser, isConnectedTo, listInstalledBrowsers, switchBrowserToolName, switchUnavailableMessage } from './browsers';
 import { Context } from './context';
 import { Response } from './response';
 import { SessionLog } from './sessionLog';
 import type { BatchAction } from './batch';
+import type { BrowserTarget } from './browsers';
 import type { ContextConfig } from './context';
 import type { IdleTimer } from './idleTimer';
 import type * as playwright from '../../..';
@@ -32,9 +34,19 @@ import type { ClientInfo, ServerBackend } from '../utils/mcp/server';
 
 const backendDebug = debug('pw:mcp:backend');
 
+export type SwitchedBrowser = {
+  browserContext: playwright.BrowserContext;
+  idleTimer?: IdleTimer;
+  // Closes the connection to the previous browser, called once the backend has released it.
+  closePrevious: () => Promise<void>;
+};
+
 export type BrowserBackendOptions = {
   dispose?: () => Promise<void>;
   idleTimer?: IdleTimer;
+  // Extension mode: the browser the backend is connected to, and how to connect to another one.
+  connectedBrowser?: BrowserTarget;
+  switchBrowser?: (target: BrowserTarget) => Promise<SwitchedBrowser>;
 };
 
 export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictoolschange: [] }> implements ServerBackend {
@@ -47,6 +59,9 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
   private _browserContext: playwright.BrowserContext;
   private _disposeCallback: (() => Promise<void>) | undefined;
   private _idleTimer: IdleTimer | undefined;
+  private _connectedBrowser: BrowserTarget | undefined;
+  private _switchBrowserCallback: BrowserBackendOptions['switchBrowser'];
+  private _cwd = '';
 
   constructor(config: ContextConfig, browserContext: playwright.BrowserContext, tools: Tool[], options: BrowserBackendOptions = {}) {
     super();
@@ -55,24 +70,43 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
     this._browserContext = browserContext;
     this._disposeCallback = options.dispose;
     this._idleTimer = options.idleTimer;
-    const markDisconnected = () => {
-      if (this._disconnected)
-        return;
-      backendDebug('browser disconnected');
-      this._disconnected = true;
-      this.emit('disconnected');
-    };
-    this._browserContext.once('close', markDisconnected);
-    this._browserContext.browser()?.once('disconnected', markDisconnected);
+    this._connectedBrowser = options.connectedBrowser;
+    this._switchBrowserCallback = options.switchBrowser;
+    this._watchBrowserContext();
+  }
+
+  private _markDisconnected = () => {
+    if (this._disconnected)
+      return;
+    backendDebug('browser disconnected');
+    this._disconnected = true;
+    this.emit('disconnected');
+  };
+
+  private _watchBrowserContext() {
+    this._browserContext.once('close', this._markDisconnected);
+    this._browserContext.browser()?.once('disconnected', this._markDisconnected);
+  }
+
+  private _unwatchBrowserContext() {
+    this._browserContext.off('close', this._markDisconnected);
+    this._browserContext.browser()?.off('disconnected', this._markDisconnected);
   }
 
   async initialize(clientInfo: ClientInfo): Promise<void> {
     this._sessionLog = this._config.saveSession ? await SessionLog.create(this._config, clientInfo.cwd) : undefined;
-    this._context = new Context(this._browserContext, {
+    this._cwd = clientInfo.cwd;
+    this._context = this._createContext();
+  }
+
+  private _createContext(): Context {
+    return new Context(this._browserContext, {
       config: this._config,
       sessionLog: this._sessionLog,
-      cwd: clientInfo.cwd,
+      cwd: this._cwd,
       onWebMCPToolsChanged: () => this.emit('dynamictoolschange'),
+      connectedBrowser: this._connectedBrowser,
+      canSwitchBrowser: !!this._switchBrowserCallback,
     });
   }
 
@@ -116,6 +150,8 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
           return formatError(`Shortcut "${parsedArguments.name}" not found. List the saved ones with browser_shortcut_list.`);
         return await this._runSteps(shortcut.actions, parsedArguments.stopOnError ?? true, rawArguments._meta, signal);
       }
+      if (name === switchBrowserToolName)
+        return await this._switchBrowser(parsedArguments.id, rawArguments._meta, formatError);
       handle = (params, response) => tool.handle(context, params, response, signal);
     } else {
       const webmcpTool = context.currentWebMCPTools().find(tool => tool.schema.name === name);
@@ -178,6 +214,44 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
         break;
     }
     return { content, ...(failed ? { isError: true } : {}) };
+  }
+
+  private async _switchBrowser(id: string, meta: Record<string, any> | undefined, formatError: (message: string) => mcpServer.CallToolResult): Promise<mcpServer.CallToolResult> {
+    const target = (await listInstalledBrowsers(this._connectedBrowser)).find(browser => browser.id === id);
+    if (!target)
+      return formatError(`Unknown browser id "${id}". Call browser_list_browsers to see the available ids.`);
+    if (!this._config.extension)
+      return formatError(`${switchBrowserToolName} needs extension mode. Start the server with --extension to connect to your browser through the Playwright extension.`);
+    if (!this._switchBrowserCallback)
+      return formatError(switchUnavailableMessage);
+
+    const respond = async (text: string) => {
+      const response = new Response(this._context!, switchBrowserToolName, { id }, { relativeTo: meta?.cwd, raw: !!meta?.raw, json: !!meta?.json });
+      response.addTextResult(text);
+      return await response.serialize();
+    };
+    if (isConnectedTo(target, this._connectedBrowser))
+      return await respond(`Already connected to ${describeBrowser(target)}.`);
+
+    // Closing the previous browser must not mark the backend as disconnected.
+    this._unwatchBrowserContext();
+    let switched: SwitchedBrowser;
+    try {
+      switched = await this._switchBrowserCallback({ channel: target.channel, userDataDir: target.userDataDir, profileDirName: target.profileDirName });
+    } catch (error) {
+      this._watchBrowserContext();
+      if (!this._browserContext.browser()?.isConnected())
+        this._markDisconnected();
+      return formatError(`Could not connect to ${describeBrowser(target)}, still connected to the previous browser.\n${String(error)}`);
+    }
+    await this._context?.dispose().catch(e => debug('pw:tools:error')(e));
+    await switched.closePrevious().catch(e => debug('pw:tools:error')(e));
+    this._browserContext = switched.browserContext;
+    this._idleTimer = switched.idleTimer;
+    this._connectedBrowser = { channel: target.channel, userDataDir: target.userDataDir, profileDirName: target.profileDirName };
+    this._watchBrowserContext();
+    this._context = this._createContext();
+    return await respond(`Connected to ${describeBrowser(target)}. The following tool calls act on this browser.`);
   }
 }
 

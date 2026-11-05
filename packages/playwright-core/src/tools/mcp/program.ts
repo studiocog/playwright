@@ -15,10 +15,12 @@
  */
 
 import { Option as ProgramOption } from 'commander';
+import { defaultUserDataDirForChannel } from '@utils/chromiumChannels';
 import * as mcpServer from '../utils/mcp/server';
-import { commaSeparatedList, defaultCodegenLanguage, dotenvFileLoader, enumParser, headerParser, numberParser, resolutionParser, resolveCLIConfigForMCP, semicolonSeparatedList } from './config';
+import { commaSeparatedList, defaultCodegenLanguage, dotenvFileLoader, enumParser, headerParser, numberParser, resolutionParser, resolveCLIConfigForMCP, resolveExtensionOptions, semicolonSeparatedList } from './config';
 import { setupExitWatchdog } from './watchdog';
 import { connectToBrowserEndpoint, createBrowserWithInfo, createIdleTimer } from './browserFactory';
+import { resolveExtensionProfile } from './extensionContextFactory';
 import { BrowserBackend } from '../backend/browserBackend';
 import { filteredTools } from '../backend/tools';
 import { testDebug } from './log';
@@ -27,6 +29,9 @@ import { packageJSON } from '../../package';
 import type { Command } from 'commander';
 import type { ClientInfo } from '../utils/mcp/server';
 import type { BrowserWithInfo } from './browserFactory';
+import type { FullConfig } from './config';
+import type { SwitchedBrowser } from '../backend/browserBackend';
+import type { BrowserTarget } from '../backend/browsers';
 import type * as playwright from '../../..';
 
 const version = packageJSON.version;
@@ -168,7 +173,37 @@ export function decorateMCPCommand(command: Command) {
             // Otherwise an idle client keeps its context open while other clients are active.
             const clientIdleTimer = shared && config.browser.isolated ? createIdleTimer(config, shared.ownership, () => browserContext.close().catch(() => { })) : undefined;
 
+            // Extension mode: browser_switch_browser replaces the browser and context, the dispose callback below then closes the new ones.
+            const extensionOptions = config.extension ? resolveExtensionOptions(options) : undefined;
+            const connectedBrowser = extensionOptions ? await extensionConnectedBrowser(config, extensionOptions) : undefined;
+            const switchBrowser = extensionOptions && !shared && !extensionOptions.executablePath ? async (target: BrowserTarget): Promise<SwitchedBrowser> => {
+              const userDataDir = target.userDataDir === defaultUserDataDirForChannel(target.channel) ? undefined : target.userDataDir;
+              const next = await createBrowserWithInfo({ ...config, browser: { ...config.browser, userDataDir } }, clientInfo, { ...options, browser: target.channel, profileDirName: target.profileDirName }, { title: clientInfo.clientName, workspaceDir: clientInfo.cwd });
+              let nextContext: playwright.BrowserContext;
+              try {
+                nextContext = next.browser.contexts()[0] ?? await next.browser.newContext(config.browser.contextOptions);
+              } catch (error) {
+                await next.browser.close().catch(() => { });
+                throw error;
+              }
+              const previousBrowser = browser;
+              const previousContext = browserContext;
+              browser = next.browser;
+              browserContext = nextContext;
+              return {
+                browserContext: nextContext,
+                idleTimer: next.idleTimer,
+                closePrevious: async () => {
+                  testDebug('close previous browser');
+                  await previousContext.close().catch(() => { });
+                  await previousBrowser.close().catch(() => { });
+                },
+              };
+            } : undefined;
+
             return new BrowserBackend(config, browserContext, tools, {
+              connectedBrowser,
+              switchBrowser,
               idleTimer: clientIdleTimer ?? info.idleTimer,
               dispose: async () => {
                 clientIdleTimer?.dispose();
@@ -198,4 +233,14 @@ export function decorateMCPCommand(command: Command) {
         };
         await mcpServer.start(factory, config.server);
       });
+}
+
+async function extensionConnectedBrowser(config: FullConfig, extensionOptions: ReturnType<typeof resolveExtensionOptions>): Promise<BrowserTarget> {
+  const { channel, executablePath, profileDirName } = extensionOptions;
+  try {
+    const { userDataDir, profileDirectory } = await resolveExtensionProfile(channel, executablePath, config.browser.userDataDir, profileDirName);
+    return { channel, userDataDir, profileDirName: profileDirectory };
+  } catch {
+    return { channel, profileDirName };
+  }
 }

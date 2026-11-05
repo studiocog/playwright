@@ -29,6 +29,7 @@ import { dedent, languageGeneratorId, secretCode } from './codegen';
 import { Tab } from './tab';
 
 import type { BrowserContextEx } from './browserContextEx';
+import type { BrowserTarget } from './browsers';
 import type { CodegenLanguage } from './codegen';
 import type * as playwrightTypes from '../../..';
 import type { SessionLog } from './sessionLog';
@@ -82,6 +83,9 @@ type ContextOptions = {
   sessionLog?: SessionLog;
   cwd: string;
   onWebMCPToolsChanged?: () => void;
+  // Extension mode: the browser and profile this context belongs to, and whether browser_switch_browser can replace it.
+  connectedBrowser?: BrowserTarget;
+  canSwitchBrowser?: boolean;
 };
 
 export type RouteEntry = {

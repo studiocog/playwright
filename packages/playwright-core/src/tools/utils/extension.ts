@@ -35,7 +35,7 @@ export async function findPlaywrightExtensionProfile(userDataDir: string): Promi
   return undefined;
 }
 
-async function listProfileDirectories(userDataDir: string): Promise<string[]> {
+export async function listProfileDirectories(userDataDir: string): Promise<string[]> {
   let entries: string[];
   try {
     entries = await fs.promises.readdir(userDataDir);
