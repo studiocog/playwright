@@ -18,9 +18,11 @@ import { EventEmitter } from 'events';
 
 import * as z from 'zod';
 import debug from 'debug';
+import { batchToolName, readShortcuts, shortcutRunToolName } from './batch';
 import { Context } from './context';
 import { Response } from './response';
 import { SessionLog } from './sessionLog';
+import type { BatchAction } from './batch';
 import type { ContextConfig } from './context';
 import type { IdleTimer } from './idleTimer';
 import type * as playwright from '../../..';
@@ -106,6 +108,14 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
           return formatError(`Invalid arguments for tool "${name}":\n${z.prettifyError(error)}`);
         throw error;
       }
+      if (name === batchToolName)
+        return await this._runSteps(parsedArguments.actions, parsedArguments.stopOnError ?? true, rawArguments._meta, signal);
+      if (name === shortcutRunToolName) {
+        const shortcut = (await readShortcuts())[parsedArguments.name];
+        if (!shortcut)
+          return formatError(`Shortcut "${parsedArguments.name}" not found. List the saved ones with browser_shortcut_list.`);
+        return await this._runSteps(shortcut.actions, parsedArguments.stopOnError ?? true, rawArguments._meta, signal);
+      }
       handle = (params, response) => tool.handle(context, params, response, signal);
     } else {
       const webmcpTool = context.currentWebMCPTools().find(tool => tool.schema.name === name);
@@ -139,6 +149,35 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
       await this.dispose();
     }
     return responseObject;
+  }
+
+  private async _runSteps(actions: BatchAction[], stopOnError: boolean, meta: Record<string, any> | undefined, signal?: AbortSignal): Promise<mcpServer.CallToolResult> {
+    const content: mcpServer.CallToolResult['content'] = [];
+    let failed = 0;
+    for (let i = 0; i < actions.length; i++) {
+      const action = actions[i];
+      const header = `## Step ${i + 1} of ${actions.length}: ${action.name}`;
+      if (action.name === batchToolName || action.name === shortcutRunToolName) {
+        content.push({ type: 'text', text: `${header}\n### Error\n${action.name} cannot run inside a batch or shortcut.` });
+        failed++;
+        if (stopOnError)
+          break;
+        continue;
+      }
+      const result = await this.callTool(action.name, { ...action.arguments, ...(meta ? { _meta: meta } : {}) }, signal);
+      content.push({ type: 'text', text: header }, ...result.content);
+      if (result.isError) {
+        failed++;
+        if (stopOnError) {
+          if (i + 1 < actions.length)
+            content.push({ type: 'text', text: `Stopped after step ${i + 1}; ${actions.length - i - 1} step(s) not run.` });
+          break;
+        }
+      }
+      if (this._disposed)
+        break;
+    }
+    return { content, ...(failed ? { isError: true } : {}) };
   }
 }
 

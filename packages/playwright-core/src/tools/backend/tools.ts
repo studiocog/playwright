@@ -15,6 +15,7 @@
  */
 
 import * as z from 'zod';
+import batch from './batch';
 import common from './common';
 import config from './config';
 import console from './console';
@@ -30,6 +31,7 @@ import keyboard from './keyboard';
 import mouse from './mouse';
 import navigate from './navigate';
 import network from './network';
+import pageText from './pageText';
 import pdf from './pdf';
 import recorder from './recorder';
 import route from './route';
@@ -49,6 +51,7 @@ import type { Tool } from './tool';
 import type { ContextConfig } from './context';
 
 export const browserTools: Tool<any>[] = [
+  ...batch,
   ...common,
   ...config,
   ...console,
@@ -64,6 +67,7 @@ export const browserTools: Tool<any>[] = [
   ...mouse,
   ...navigate,
   ...network,
+  ...pageText,
   ...pdf,
   ...recorder,
   ...route,

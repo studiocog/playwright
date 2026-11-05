@@ -19,6 +19,13 @@ import { test, expect } from './fixtures';
 test('test snapshot tool list', async ({ client }) => {
   const { tools } = await client.listTools();
   expect(new Set(tools.map(t => t.name))).toEqual(new Set([
+    'browser_batch',
+    'browser_get_text',
+    'browser_shortcut_delete',
+    'browser_shortcut_list',
+    'browser_shortcut_run',
+    'browser_shortcut_save',
+    'browser_zoom',
     'browser_click',
     'browser_console_messages',
     'browser_drag',
