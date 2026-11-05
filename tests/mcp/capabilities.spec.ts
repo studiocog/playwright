@@ -21,6 +21,7 @@ test('test snapshot tool list', async ({ client }) => {
   expect(new Set(tools.map(t => t.name))).toEqual(new Set([
     'browser_batch',
     'browser_get_text',
+    'browser_paste_image',
     'browser_shortcut_delete',
     'browser_shortcut_list',
     'browser_shortcut_run',
