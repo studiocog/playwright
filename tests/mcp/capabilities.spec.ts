@@ -22,6 +22,8 @@ test('test snapshot tool list', async ({ client }) => {
     'browser_batch',
     'browser_get_text',
     'browser_paste_image',
+    'browser_start_gif',
+    'browser_stop_gif',
     'browser_shortcut_delete',
     'browser_shortcut_list',
     'browser_shortcut_run',

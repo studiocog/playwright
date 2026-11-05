@@ -33,6 +33,7 @@ import type { CodegenLanguage } from './codegen';
 import type * as playwrightTypes from '../../..';
 import type { SessionLog } from './sessionLog';
 import type { Disposable } from '@isomorphic/disposable';
+import type { GifRecorder } from './gif';
 import type { ToolCapability } from './tool';
 import type { WebMCPToolDefinition } from './webmcp';
 
@@ -132,6 +133,8 @@ export class Context {
     traces: (TraceInfo & { browserContext: playwrightTypes.BrowserContext })[];
   } | undefined;
   private _disposables: Disposable[] = [];
+  // Set by browser_start_gif, stopped without writing a file when the context is disposed.
+  gifRecording: GifRecorder | undefined;
 
   private _webmcpToolsSignature = '';
   private _redactUrlParamsRegex: RegExp | undefined;
@@ -163,6 +166,8 @@ export class Context {
 
   async dispose() {
     process.off('unhandledRejection', this._onUnhandledRejection);
+    await this.gifRecording?.dispose();
+    this.gifRecording = undefined;
     await this.stopRecording();
     await this.stopVideoRecording();
     await disposeAll(this._disposables);
