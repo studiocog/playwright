@@ -15,6 +15,7 @@
  */
 
 import * as z from 'zod';
+import approval from './approval';
 import batch from './batch';
 import browsers from './browsers';
 import common from './common';
@@ -54,6 +55,7 @@ import type { Tool } from './tool';
 import type { ContextConfig } from './context';
 
 export const browserTools: Tool<any>[] = [
+  ...approval,
   ...batch,
   ...browsers,
   ...common,

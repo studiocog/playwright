@@ -18,6 +18,7 @@ import { EventEmitter } from 'events';
 
 import * as z from 'zod';
 import debug from 'debug';
+import { checkApproval } from './approval';
 import { batchToolName, readShortcuts, shortcutRunToolName, shortcutVariables, substituteVariables } from './batch';
 import { describeBrowser, isConnectedTo, listInstalledBrowsers, switchBrowserToolName, switchUnavailableMessage } from './browsers';
 import { Context } from './context';
@@ -161,6 +162,9 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
       }
       if (name === switchBrowserToolName)
         return await this._switchBrowser(parsedArguments.id, rawArguments._meta, formatError);
+      const denied = await checkApproval(context, name, parsedArguments, signal);
+      if (denied)
+        return formatError(denied);
       handle = (params, response) => tool.handle(context, params, response, signal);
     } else {
       const webmcpTool = context.currentWebMCPTools().find(tool => tool.schema.name === name);
