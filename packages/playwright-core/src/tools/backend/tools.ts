@@ -40,6 +40,7 @@ import pageText from './pageText';
 import pasteImage from './pasteImage';
 import pdf from './pdf';
 import recorder from './recorder';
+import recordShortcut from './recordShortcut';
 import route from './route';
 import runCode from './runCode';
 import snapshot from './snapshot';
@@ -82,6 +83,7 @@ export const browserTools: Tool<any>[] = [
   ...pasteImage,
   ...pdf,
   ...recorder,
+  ...recordShortcut,
   ...route,
   ...runCode,
   ...screenshot,

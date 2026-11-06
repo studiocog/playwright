@@ -29,6 +29,8 @@ test('test snapshot tool list', async ({ client }) => {
     'browser_stop_gif',
     'browser_shortcut_delete',
     'browser_shortcut_list',
+    'browser_shortcut_record_start',
+    'browser_shortcut_record_stop',
     'browser_shortcut_run',
     'browser_shortcut_save',
     'browser_zoom',

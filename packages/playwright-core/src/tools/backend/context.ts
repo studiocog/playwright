@@ -28,6 +28,7 @@ import { playwright } from '../../inprocess';
 import { dedent, languageGeneratorId, secretCode } from './codegen';
 import { Tab } from './tab';
 
+import type * as actions from '@isomorphic/codegen/actions';
 import type { BrowserContextEx } from './browserContextEx';
 import type { BrowserTarget } from './browsers';
 import type { CodegenLanguage } from './codegen';
@@ -109,6 +110,15 @@ type VideoParams = { size?: { width: number; height: number }, fps?: number, cur
 
 export type TraceInfo = { name: string, isolatedContext?: string };
 
+// 'code' is browser_start_recording, 'shortcut' is browser_shortcut_record_start.
+export type RecordingPurpose = 'code' | 'shortcut';
+
+export type RecordedAction = {
+  page: playwrightTypes.Page;
+  action: actions.Action;
+  signals: actions.Signal[];
+};
+
 // Actions are paced by this delay when the cursor is shown, giving it time to travel.
 const kCursorDuration = 800;
 
@@ -129,8 +139,10 @@ export class Context {
     fileName: string;
   } | undefined;
   private _recording: {
+    purpose: RecordingPurpose;
     browserContext: playwrightTypes.BrowserContext;
     actions: string[];
+    recordedActions: RecordedAction[];
   } | undefined;
   private _tracing: {
     name: string;
@@ -172,7 +184,7 @@ export class Context {
     process.off('unhandledRejection', this._onUnhandledRejection);
     await this.gifRecording?.dispose();
     this.gifRecording = undefined;
-    await this.stopRecording();
+    await this._stopAnyRecording();
     await this.stopVideoRecording();
     await disposeAll(this._disposables);
     for (const tab of this._tabs)
@@ -281,40 +293,61 @@ export class Context {
     return [...video.fileNames];
   }
 
-  async startRecording() {
+  async startRecording(purpose: RecordingPurpose = 'code') {
     if (this._recording)
-      throw new Error('Recording is already in progress.');
+      throw new Error(this._recording.purpose === purpose ? 'Recording is already in progress.' : `Recording is already in progress (started by ${this._recording.purpose === 'code' ? 'browser_start_recording' : 'browser_shortcut_record_start'}), stop it first.`);
     const browserContext = await this.currentBrowserContext() as BrowserContextEx;
     if (typeof browserContext._startRecording !== 'function')
       throw new Error('Recording requires a newer version of Playwright, please upgrade.');
-    const recordedActions: string[] = [];
+    const codeActions: string[] = [];
+    const recordedActions: RecordedAction[] = [];
     await browserContext._startRecording({
       language: languageGeneratorId(this.codegenLanguage()),
     }, {
       actionAdded: (page, action, code) => {
-        recordedActions.push(code);
+        codeActions.push(code);
+        recordedActions.push({ page, action, signals: [] });
       },
       actionUpdated: (page, action, code) => {
-        if (recordedActions.length)
-          recordedActions[recordedActions.length - 1] = code;
+        if (codeActions.length)
+          codeActions[codeActions.length - 1] = code;
         else
-          recordedActions.push(code);
+          codeActions.push(code);
+        if (recordedActions.length)
+          recordedActions[recordedActions.length - 1] = { ...recordedActions[recordedActions.length - 1], page, action };
+        else
+          recordedActions.push({ page, action, signals: [] });
       },
       signalAdded: (page, signal, code) => {
-        if (recordedActions.length && code)
-          recordedActions[recordedActions.length - 1] = code;
+        if (codeActions.length && code)
+          codeActions[codeActions.length - 1] = code;
+        recordedActions[recordedActions.length - 1]?.signals.push(signal);
       },
     });
-    this._recording = { browserContext, actions: recordedActions };
+    this._recording = { purpose, browserContext, actions: codeActions, recordedActions };
   }
 
   async stopRecording(): Promise<string[] | undefined> {
+    if (this._recording?.purpose !== 'code')
+      return undefined;
+    const recording = await this._stopAnyRecording();
+    return recording?.actions.filter(code => code.trim()).map(dedent);
+  }
+
+  async stopShortcutRecording(): Promise<RecordedAction[] | undefined> {
+    if (this._recording?.purpose !== 'shortcut')
+      return undefined;
+    const recording = await this._stopAnyRecording();
+    return recording?.recordedActions;
+  }
+
+  private async _stopAnyRecording() {
     const recording = this._recording;
     if (!recording)
       return undefined;
     this._recording = undefined;
     await (recording.browserContext as BrowserContextEx)._stopRecording();
-    return recording.actions.filter(code => code.trim()).map(dedent);
+    return recording;
   }
 
   async startTracing(): Promise<TraceInfo[]> {

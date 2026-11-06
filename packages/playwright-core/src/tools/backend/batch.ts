@@ -34,6 +34,8 @@ export const batchActionsSchema = z.array(batchActionSchema).min(1).max(50);
 
 export type BatchAction = z.output<typeof batchActionSchema>;
 
+export const shortcutNameSchema = z.string().regex(/^[\w-]+$/).describe('Shortcut name: letters, digits, "_" and "-" only.');
+
 type Shortcut = {
   description?: string;
   actions: BatchAction[];
@@ -124,7 +126,7 @@ const shortcutSave = defineTool({
     title: 'Save a shortcut',
     description: 'Save a named sequence of browser tool calls as a reusable shortcut, to run later with browser_shortcut_run. Saving under an existing name replaces it. Write {{name}} in any string argument to make it a variable that browser_shortcut_run fills in.',
     inputSchema: z.object({
-      name: z.string().regex(/^[\w-]+$/).describe('Shortcut name: letters, digits, "_" and "-" only.'),
+      name: shortcutNameSchema,
       description: z.string().optional().describe('What the shortcut does.'),
       actions: batchActionsSchema.describe('The tool calls the shortcut runs, in order. {{name}} in a string argument is a variable; names use letters, digits and "_".'),
       variables: z.record(z.string(), z.string()).optional().describe('Optional descriptions of the variables, as { name: description }.'),
@@ -132,20 +134,25 @@ const shortcutSave = defineTool({
     type: 'action',
   },
   handle: async (context, params, response) => {
-    if (params.actions.some(action => action.name === batchToolName || action.name === shortcutRunToolName))
-      throw new Error(`A shortcut cannot contain ${batchToolName} or ${shortcutRunToolName}.`);
-    const variables = findVariables(params.actions);
-    const unused = Object.keys(params.variables ?? {}).filter(name => !variables.includes(name));
-    if (unused.length)
-      throw new Error(`No action uses the documented variable(s): ${unused.join(', ')}. Write {{name}} in an action argument to use a variable.`);
-    const shortcuts = await readShortcuts();
-    const replaced = !!shortcuts[params.name];
-    shortcuts[params.name] = { description: params.description, actions: params.actions, variables, ...(params.variables ? { variableDescriptions: params.variables } : {}) };
-    await writeShortcuts(shortcuts);
-    const variablesText = variables.length ? ` and variable(s) ${variables.join(', ')}` : '';
-    response.addTextResult(`${replaced ? 'Replaced' : 'Saved'} shortcut "${params.name}" with ${params.actions.length} step(s)${variablesText} in ${shortcutsFile()}.`);
+    response.addTextResult(await saveShortcut(params));
   },
 });
+
+// Saves a shortcut and returns a message that describes what was saved.
+export async function saveShortcut(params: { name: string, description?: string, actions: BatchAction[], variables?: Record<string, string> }): Promise<string> {
+  if (params.actions.some(action => action.name === batchToolName || action.name === shortcutRunToolName))
+    throw new Error(`A shortcut cannot contain ${batchToolName} or ${shortcutRunToolName}.`);
+  const variables = findVariables(params.actions);
+  const unused = Object.keys(params.variables ?? {}).filter(name => !variables.includes(name));
+  if (unused.length)
+    throw new Error(`No action uses the documented variable(s): ${unused.join(', ')}. Write {{name}} in an action argument to use a variable.`);
+  const shortcuts = await readShortcuts();
+  const replaced = !!shortcuts[params.name];
+  shortcuts[params.name] = { description: params.description, actions: params.actions, variables, ...(params.variables ? { variableDescriptions: params.variables } : {}) };
+  await writeShortcuts(shortcuts);
+  const variablesText = variables.length ? ` and variable(s) ${variables.join(', ')}` : '';
+  return `${replaced ? 'Replaced' : 'Saved'} shortcut "${params.name}" with ${params.actions.length} step(s)${variablesText} in ${shortcutsFile()}.`;
+}
 
 const shortcutList = defineTool({
   capability: 'core',
