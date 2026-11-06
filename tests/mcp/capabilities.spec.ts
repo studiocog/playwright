@@ -54,6 +54,7 @@ test('test snapshot tool list', async ({ client }) => {
     'browser_resize',
     'browser_run_code_unsafe',
     'browser_snapshot',
+    'browser_snapshot_compact',
     'browser_tabs',
     'browser_take_screenshot',
     'browser_wait_for',

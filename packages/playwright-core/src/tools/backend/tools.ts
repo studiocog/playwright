@@ -19,6 +19,7 @@ import approval from './approval';
 import batch from './batch';
 import browsers from './browsers';
 import common from './common';
+import compactSnapshot from './compactSnapshot';
 import config from './config';
 import console from './console';
 import cookies from './cookies';
@@ -59,6 +60,7 @@ export const browserTools: Tool<any>[] = [
   ...batch,
   ...browsers,
   ...common,
+  ...compactSnapshot,
   ...config,
   ...console,
   ...cookies,
