@@ -61,6 +61,24 @@ test('approval gate times out when the user does not answer', async ({ startClie
   });
 });
 
+test('approval gate refuses other tool calls while it waits', async ({ startClient, server }) => {
+  setPage(server);
+  const { client } = await startClient({ env: { PLAYWRIGHT_MCP_APPROVAL_GATES: '1', PLAYWRIGHT_MCP_APPROVAL_TIMEOUT_MS: '3000' } });
+  await client.callTool({ name: 'browser_navigate', arguments: { url: server.PREFIX } });
+
+  const send = client.callTool({ name: 'browser_click', arguments: { element: 'Send', target: '#send' } });
+  await expect.poll(async () => allText(await client.callTool({ name: 'browser_snapshot', arguments: {} }))).toContain('waiting for the user to allow or deny');
+  // A trusted key press on the focused page must not answer the overlay either.
+  const enter = await client.callTool({ name: 'browser_press_key', arguments: { key: 'Enter' } });
+  expect(enter.isError).toBe(true);
+  expect(allText(enter)).toContain('waiting for the user to allow or deny');
+
+  expect(allText(await send)).toContain('did not answer');
+  expect(await client.callTool({ name: 'browser_evaluate', arguments: { function: clicksFunction } })).toHaveResponse({
+    result: '";false"',
+  });
+});
+
 test('approval gate runs the tool when the user allows it', async ({ startClient, server }) => {
   setPage(server);
   const { client } = await startClient({ env: { PLAYWRIGHT_MCP_APPROVAL_GATES: '1', PLAYWRIGHT_MCP_APPROVAL_TIMEOUT_MS: '5000', PWTEST_MCP_APPROVAL_ANSWER_FOR_TEST: 'allow' } });

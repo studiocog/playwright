@@ -63,6 +63,8 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
   private _connectedBrowser: BrowserTarget | undefined;
   private _switchBrowserCallback: BrowserBackendOptions['switchBrowser'];
   private _cwd = '';
+  // Set while an approval gate waits for the user, so that no other tool call can answer it with trusted input.
+  private _approvalPending = false;
 
   constructor(config: ContextConfig, browserContext: playwright.BrowserContext, tools: Tool[], options: BrowserBackendOptions = {}) {
     super();
@@ -130,6 +132,8 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
       content: [{ type: 'text' as const, text: json ? JSON.stringify({ isError: true, error: message }, null, 2) : `### Error\n${message}` }],
       isError: true,
     });
+    if (this._approvalPending)
+      return formatError(`Tool "${name}" was not run: an action is waiting for the user to allow or deny it in the browser. Wait for that call to return.`);
     const context = this._context!;
 
     let parsedArguments: any;
@@ -162,7 +166,13 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
       }
       if (name === switchBrowserToolName)
         return await this._switchBrowser(parsedArguments.id, rawArguments._meta, formatError);
-      const denied = await checkApproval(context, name, parsedArguments, signal);
+      let denied: string | undefined;
+      this._approvalPending = true;
+      try {
+        denied = await checkApproval(context, name, parsedArguments, signal);
+      } finally {
+        this._approvalPending = false;
+      }
       if (denied)
         return formatError(denied);
       handle = (params, response) => tool.handle(context, params, response, signal);
