@@ -18,7 +18,7 @@ import { EventEmitter } from 'events';
 
 import * as z from 'zod';
 import debug from 'debug';
-import { batchToolName, readShortcuts, shortcutRunToolName } from './batch';
+import { batchToolName, readShortcuts, shortcutRunToolName, shortcutVariables, substituteVariables } from './batch';
 import { describeBrowser, isConnectedTo, listInstalledBrowsers, switchBrowserToolName, switchUnavailableMessage } from './browsers';
 import { Context } from './context';
 import { Response } from './response';
@@ -148,7 +148,16 @@ export class BrowserBackend extends EventEmitter<{ disconnected: [], dynamictool
         const shortcut = (await readShortcuts())[parsedArguments.name];
         if (!shortcut)
           return formatError(`Shortcut "${parsedArguments.name}" not found. List the saved ones with browser_shortcut_list.`);
-        return await this._runSteps(shortcut.actions, parsedArguments.stopOnError ?? true, rawArguments._meta, signal);
+        const values: Record<string, string> = parsedArguments.variables ?? {};
+        const variables = shortcutVariables(shortcut);
+        const missing = variables.filter(variable => !Object.prototype.hasOwnProperty.call(values, variable));
+        if (missing.length)
+          return formatError(`Shortcut "${parsedArguments.name}" needs a value for missing variable(s): ${missing.join(', ')}. Pass them in "variables". No step was run.`);
+        const result = await this._runSteps(substituteVariables(shortcut.actions, values), parsedArguments.stopOnError ?? true, rawArguments._meta, signal);
+        const extra = Object.keys(values).filter(variable => !variables.includes(variable));
+        if (extra.length)
+          result.content.unshift({ type: 'text', text: `Ignored variable(s) the shortcut does not use: ${extra.join(', ')}.` });
+        return result;
       }
       if (name === switchBrowserToolName)
         return await this._switchBrowser(parsedArguments.id, rawArguments._meta, formatError);

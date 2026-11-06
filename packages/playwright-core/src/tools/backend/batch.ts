@@ -37,7 +37,46 @@ export type BatchAction = z.output<typeof batchActionSchema>;
 type Shortcut = {
   description?: string;
   actions: BatchAction[];
+  // Missing in shortcuts saved before variables were supported.
+  variables?: string[];
+  variableDescriptions?: Record<string, string>;
 };
+
+const variablePattern = /\{\{(\w+)\}\}/g;
+
+function visitStrings(value: unknown, visit: (text: string) => string): unknown {
+  if (typeof value === 'string')
+    return visit(value);
+  if (Array.isArray(value))
+    return value.map(item => visitStrings(item, visit));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, visitStrings(item, visit)]));
+  return value;
+}
+
+// Returns the names of the {{name}} variables used in any string inside `value`, in order of first use.
+export function findVariables(value: unknown): string[] {
+  const names = new Set<string>();
+  visitStrings(value, text => {
+    for (const match of text.matchAll(variablePattern))
+      names.add(match[1]);
+    return text;
+  });
+  return [...names];
+}
+
+// Replaces {{name}} in every string inside `value` with values[name]. Variables without a value are left as is.
+export function substituteVariables<T>(value: T, values: Record<string, string>): T {
+  return visitStrings(value, text => {
+    if (!text.includes('{{'))
+      return text;
+    return text.replace(variablePattern, (match, name: string) => Object.prototype.hasOwnProperty.call(values, name) ? values[name] : match);
+  }) as T;
+}
+
+export function shortcutVariables(shortcut: Shortcut): string[] {
+  return shortcut.variables ?? findVariables(shortcut.actions);
+}
 
 export function shortcutsFile(): string {
   return process.env.PLAYWRIGHT_MCP_SHORTCUTS_FILE || path.join(os.homedir(), '.playwright-mcp', 'shortcuts.json');
@@ -83,22 +122,28 @@ const shortcutSave = defineTool({
   schema: {
     name: 'browser_shortcut_save',
     title: 'Save a shortcut',
-    description: 'Save a named sequence of browser tool calls as a reusable shortcut, to run later with browser_shortcut_run. Saving under an existing name replaces it.',
+    description: 'Save a named sequence of browser tool calls as a reusable shortcut, to run later with browser_shortcut_run. Saving under an existing name replaces it. Write {{name}} in any string argument to make it a variable that browser_shortcut_run fills in.',
     inputSchema: z.object({
       name: z.string().regex(/^[\w-]+$/).describe('Shortcut name: letters, digits, "_" and "-" only.'),
       description: z.string().optional().describe('What the shortcut does.'),
-      actions: batchActionsSchema.describe('The tool calls the shortcut runs, in order.'),
+      actions: batchActionsSchema.describe('The tool calls the shortcut runs, in order. {{name}} in a string argument is a variable; names use letters, digits and "_".'),
+      variables: z.record(z.string(), z.string()).optional().describe('Optional descriptions of the variables, as { name: description }.'),
     }),
     type: 'action',
   },
   handle: async (context, params, response) => {
     if (params.actions.some(action => action.name === batchToolName || action.name === shortcutRunToolName))
       throw new Error(`A shortcut cannot contain ${batchToolName} or ${shortcutRunToolName}.`);
+    const variables = findVariables(params.actions);
+    const unused = Object.keys(params.variables ?? {}).filter(name => !variables.includes(name));
+    if (unused.length)
+      throw new Error(`No action uses the documented variable(s): ${unused.join(', ')}. Write {{name}} in an action argument to use a variable.`);
     const shortcuts = await readShortcuts();
     const replaced = !!shortcuts[params.name];
-    shortcuts[params.name] = { description: params.description, actions: params.actions };
+    shortcuts[params.name] = { description: params.description, actions: params.actions, variables, ...(params.variables ? { variableDescriptions: params.variables } : {}) };
     await writeShortcuts(shortcuts);
-    response.addTextResult(`${replaced ? 'Replaced' : 'Saved'} shortcut "${params.name}" with ${params.actions.length} step(s) in ${shortcutsFile()}.`);
+    const variablesText = variables.length ? ` and variable(s) ${variables.join(', ')}` : '';
+    response.addTextResult(`${replaced ? 'Replaced' : 'Saved'} shortcut "${params.name}" with ${params.actions.length} step(s)${variablesText} in ${shortcutsFile()}.`);
   },
 });
 
@@ -107,7 +152,7 @@ const shortcutList = defineTool({
   schema: {
     name: 'browser_shortcut_list',
     title: 'List shortcuts',
-    description: 'List the saved shortcuts with their descriptions and steps.',
+    description: 'List the saved shortcuts with their descriptions, variables and steps.',
     inputSchema: z.object({}),
     type: 'readOnly',
   },
@@ -122,6 +167,15 @@ const shortcutList = defineTool({
     for (const name of names) {
       const shortcut = shortcuts[name];
       lines.push(`- ${name}${shortcut.description ? `: ${shortcut.description}` : ''}`);
+      const variables = shortcutVariables(shortcut);
+      if (variables.length) {
+        lines.push(`  Variables:`);
+        for (const variable of variables) {
+          const description = shortcut.variableDescriptions?.[variable];
+          lines.push(`  - {{${variable}}}${description ? `: ${description}` : ''}`);
+        }
+        lines.push(`  Steps:`);
+      }
       for (const action of shortcut.actions)
         lines.push(`  - ${action.name} ${JSON.stringify(action.arguments ?? {})}`);
     }
@@ -134,9 +188,10 @@ const shortcutRun = defineTool({
   schema: {
     name: shortcutRunToolName,
     title: 'Run a shortcut',
-    description: 'Run a saved shortcut: its tool calls run in order, as with browser_batch.',
+    description: 'Run a saved shortcut: its tool calls run in order, as with browser_batch. Give a value for each variable the shortcut uses.',
     inputSchema: z.object({
       name: z.string().describe('Name of the shortcut to run.'),
+      variables: z.record(z.string(), z.string()).optional().describe('Values for the shortcut variables, as { name: value }. Each {{name}} in the actions is replaced with its value.'),
       stopOnError: z.boolean().optional().describe('Stop at the first step that fails. Defaults to true.'),
     }),
     type: 'action',
