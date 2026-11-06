@@ -27,6 +27,7 @@ import devtools from './devtools';
 import dialogs from './dialogs';
 import emulation from './emulation';
 import evaluate from './evaluate';
+import extract from './extract';
 import files from './files';
 import find from './find';
 import form from './form';
@@ -68,6 +69,7 @@ export const browserTools: Tool<any>[] = [
   ...dialogs,
   ...emulation,
   ...evaluate,
+  ...extract,
   ...files,
   ...find,
   ...form,
